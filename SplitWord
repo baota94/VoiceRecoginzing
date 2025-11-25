@@ -1,0 +1,106 @@
+import os
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import numpy as np
+import librosa
+import soundfile as sf
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.pyplot as plt
+
+class WordSplitterGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Word Splitter with Chart")
+        
+        self.silence_max = 0.0
+        self.wav_file = ""
+        self.sr = 16000
+        self.y = None
+        
+        # Buttons
+        tk.Button(root, text="Load Silence Folder", command=self.load_silence_folder).pack(pady=5)
+        tk.Button(root, text="Load WAV File", command=self.load_wav_file).pack(pady=5)
+        tk.Button(root, text="Split Words", command=self.split_words).pack(pady=5)
+        
+        # Chart area
+        self.fig, self.ax = plt.subplots(figsize=(10,3))
+        self.canvas = FigureCanvasTkAgg(self.fig, master=root)
+        self.canvas.get_tk_widget().pack()
+    
+    def load_silence_folder(self):
+        folder_path = filedialog.askdirectory(title="Select Silence Folder")
+        if not folder_path:
+            return
+        self.silence_max = 0.0
+        for filename in os.listdir(folder_path):
+            if filename.lower().endswith(".wav"):
+                filepath = os.path.join(folder_path, filename)
+                y, sr = librosa.load(filepath, sr=self.sr)
+                frame_length = int(0.025*sr)
+                hop_length = frame_length
+                energy = np.array([np.sum(y[i:i+frame_length]**2) for i in range(0, len(y)-frame_length+1, hop_length)])
+                max_energy = np.max(energy)
+                if max_energy > self.silence_max:
+                    self.silence_max = max_energy/4
+        messagebox.showinfo("Info", f"Loaded silence max energy: {self.silence_max}")
+    
+    def load_wav_file(self):
+        file_path = filedialog.askopenfilename(title="Select WAV File", filetypes=[("WAV files","*.wav")])
+        if not file_path:
+            return
+        self.wav_file = file_path
+        self.y, _ = librosa.load(self.wav_file, sr=self.sr)
+        self.plot_waveform()
+        messagebox.showinfo("Info", f"Loaded WAV: {self.wav_file}")
+    
+    def plot_waveform(self, highlights=None):
+        self.ax.clear()
+        self.ax.plot(self.y, color='lightblue', linewidth=0.5)
+        if highlights:
+            for start, stop in highlights:
+                self.ax.axvspan(int(start*self.sr), int(stop*self.sr), color='red', alpha=0.3)
+        self.ax.set_title("Waveform with Highlighted Words")
+        self.ax.set_xlabel("Sample")
+        self.ax.set_ylabel("Amplitude")
+        self.canvas.draw()
+    
+    def split_words(self):
+        if self.y is None:
+            messagebox.showwarning("Warning", "No WAV loaded")
+            return
+        
+        frame_length = int(0.025*self.sr)
+        hop_length = int(0.01*self.sr)  # 25ms frame, 15ms overlap
+        energies = np.array([np.sum(self.y[i:i+frame_length]**2) for i in range(0, len(self.y)-frame_length+1, hop_length)])
+        delta_energy = np.diff(energies)
+        
+        start_times = []
+        stop_times = []
+        
+        for i in range(1, len(delta_energy)):
+            if delta_energy[i-1] < 0 and delta_energy[i] >= 0:
+                start_time = i * hop_length / self.sr
+                if len(start_times) == len(stop_times):
+                    start_times.append(start_time)
+                else:
+                    stop_times.append(start_time)
+        
+        if len(start_times) > len(stop_times):
+            stop_times.append(len(self.y)/self.sr)
+        
+        highlights = []
+        for idx, (start, stop) in enumerate(zip(start_times, stop_times)):
+            s_idx = int(start*self.sr)
+            e_idx = int(stop*self.sr)
+            segment_energy = np.sum(self.y[s_idx:e_idx]**2)
+            if segment_energy > self.silence_max:
+                sf.write(f"wav_{idx+1}.wav", self.y[s_idx:e_idx], self.sr)
+                highlights.append((start, stop))
+        
+        self.plot_waveform(highlights)
+        messagebox.showinfo("Info", f"Split done! Generated {len(highlights)} segments.")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = WordSplitterGUI(root)
+    root.mainloop()
